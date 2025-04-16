@@ -150,7 +150,7 @@ def update_tmx_file(matrix):
 
 # matrix = update_graph_with_path(matrix, (6,0) , 128)
 # print(ucs_algorithm(matrix, (6,10) , 128))
-for x, y in ucs_algorithm(matrix, (6,26) , 128):
+for x, y in ucs_algorithm(matrix, (6,0) , 128):
     matrix[x][y] = 128
 
 update_tmx_file(matrix)
