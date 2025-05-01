@@ -1,3 +1,5 @@
+asal map ka naam (map check1.tmx) he
+
 isme assets and tilemap wale 2 folders hen
 
 map complete kar dia he, usme algo apply karlo then baaqi finishing dete hen map ko, abhi first class bana hoa he, 
