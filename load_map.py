@@ -2,6 +2,11 @@ import pygame
 import os
 import sys
 import xml.etree.ElementTree as ET
+import psutil
+import platform
+import GPUtil
+from datetime import datetime
+import time
 
 # Initialize Pygame
 pygame.init()
@@ -11,7 +16,85 @@ WIDTH, HEIGHT = 1152, 768
 TILE_SIZE = 64  # TMX file has 64x64 tilewidth/tileheight
 MAP_SCALE = 0.5  # Scale down the map to fit on screen
 SCALED_TILE_SIZE = int(TILE_SIZE * MAP_SCALE)
-FPS = 60
+FPS = 144
+
+# Performance monitoring
+class PerformanceMonitor:
+    def __init__(self):
+        self.frame_times = []
+        self.max_samples = 60  # Store last 60 frames
+        self.render_times = []
+        self.visible_tiles = 0
+        self.total_tiles = 0
+        self.last_update = time.time()
+        self.update_interval = 0.5  # Update stats every 0.5 seconds
+        
+    def add_frame_time(self, frame_time):
+        self.frame_times.append(frame_time)
+        if len(self.frame_times) > self.max_samples:
+            self.frame_times.pop(0)
+    
+    def add_render_time(self, render_time):
+        self.render_times.append(render_time)
+        if len(self.render_times) > self.max_samples:
+            self.render_times.pop(0)
+    
+    def get_stats(self):
+        if not self.frame_times:
+            return {
+                'fps': 0,
+                'frame_time': 0,
+                'render_time': 0,
+                'visible_tiles': 0,
+                'total_tiles': 0,
+                'tile_ratio': "0/0",
+                'memory_usage': 0
+            }
+        
+        avg_frame_time = sum(self.frame_times) / len(self.frame_times)
+        avg_render_time = sum(self.render_times) / len(self.render_times) if self.render_times else 0
+        current_fps = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+        
+        return {
+            'fps': current_fps,
+            'frame_time': avg_frame_time * 1000,  # Convert to ms
+            'render_time': avg_render_time * 1000,  # Convert to ms
+            'visible_tiles': self.visible_tiles,
+            'total_tiles': self.total_tiles,
+            'tile_ratio': f"{self.visible_tiles}/{self.total_tiles}",
+            'memory_usage': psutil.Process().memory_info().rss / 1024 / 1024  # MB
+        }
+
+# Initialize performance monitor
+perf_monitor = PerformanceMonitor()
+
+# System Information
+def get_system_info():
+    info = {
+        'os': f"{platform.system()} {platform.release()}",
+        'cpu': platform.processor(),
+        'cpu_cores': psutil.cpu_count(logical=False),
+        'cpu_threads': psutil.cpu_count(logical=True),
+        'ram': f"{round(psutil.virtual_memory().total / (1024**3), 2)} GB",
+        'pygame_version': pygame.version.ver,
+        'python_version': platform.python_version(),
+        'resolution': f"{WIDTH}x{HEIGHT}",
+        'start_time': datetime.now()
+    }
+    
+    try:
+        gpus = GPUtil.getGPUs()
+        if gpus:
+            info['gpu'] = f"{gpus[0].name} ({gpus[0].memoryTotal}MB)"
+        else:
+            info['gpu'] = "No GPU detected"
+    except:
+        info['gpu'] = "GPU info unavailable"
+    
+    return info
+
+# Get system information
+system_info = get_system_info()
 
 # Setup the display
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -256,10 +339,13 @@ zoom = 1.0
 
 # Font setup
 font = pygame.font.SysFont(None, 24)
+small_font = pygame.font.SysFont(None, 18)
 
 # Main game loop
 running = True
 while running:
+    frame_start = time.time()
+    
     # Calculate delta time
     dt = clock.tick(FPS) / 1000.0
     
@@ -291,6 +377,9 @@ while running:
     
     # Render chunks
     current_effective_tile_size = int(SCALED_TILE_SIZE * zoom)
+    render_start = time.time()
+    visible_tiles = 0
+    total_tiles = 0
     
     for chunk in chunks:
         chunk_x = chunk['x']
@@ -313,6 +402,7 @@ while running:
         # Render each tile in the chunk
         for y, row in enumerate(chunk_data):
             for x, gid in enumerate(row):
+                total_tiles += 1
                 if gid > 0:  # Skip empty tiles
                     # Calculate screen position for this tile
                     screen_x = base_x + x * current_effective_tile_size
@@ -321,7 +411,7 @@ while running:
                     # Only draw tiles that are on or near screen
                     if (-current_effective_tile_size <= screen_x < WIDTH and 
                         -current_effective_tile_size <= screen_y < HEIGHT):
-                        
+                        visible_tiles += 1
                         tile_image = get_tile_image(gid)
                         if tile_image:
                             # Scale the tile according to zoom
@@ -329,21 +419,59 @@ while running:
                                 tile_image, 
                                 (current_effective_tile_size, current_effective_tile_size)
                             )
-                            
                             screen.blit(scaled_tile, (screen_x, screen_y))
     
-    # Display info
-    info_text = font.render(f"Use arrow keys to navigate. +/- to zoom. ESC to exit.", True, (255, 255, 255))
-    coord_text = font.render(f"Camera position: ({-camera_x}, {-camera_y}), Zoom: {zoom:.1f}x", True, (255, 255, 255))
-    screen.blit(info_text, (10, 10))
-    screen.blit(coord_text, (10, 40))
+    render_time = time.time() - render_start
+    perf_monitor.add_render_time(render_time)
+    perf_monitor.visible_tiles = visible_tiles
+    perf_monitor.total_tiles = total_tiles
     
-    # FPS display
-    fps_text = font.render(f"FPS: {int(clock.get_fps())}", True, (255, 255, 255))
-    screen.blit(fps_text, (WIDTH - 100, 10))
+    # Display system information
+    y_offset = 10
+    stats = perf_monitor.get_stats()
+    
+    info_lines = [
+        f"OS: {system_info['os']}",
+        f"CPU: {system_info['cpu']} ({system_info['cpu_cores']} cores, {system_info['cpu_threads']} threads)",
+        f"GPU: {system_info['gpu']}",
+        f"RAM: {system_info['ram']}",
+        f"Python: {system_info['python_version']}",
+        f"Pygame: {system_info['pygame_version']}",
+        f"Resolution: {system_info['resolution']}",
+        f"FPS: {stats['fps']:.1f}",
+        f"Frame Time: {stats['frame_time']:.1f}ms",
+        f"Render Time: {stats['render_time']:.1f}ms",
+        f"Visible Tiles: {stats['tile_ratio']}",
+        f"Memory Usage: {stats['memory_usage']:.1f} MB",
+        f"Camera: ({-camera_x:.1f}, {-camera_y:.1f})",
+        f"Zoom: {zoom:.1f}x",
+        f"Tile Size: {current_effective_tile_size}px",
+        f"Uptime: {(datetime.now() - system_info['start_time']).total_seconds():.1f}s"
+    ]
+    
+    # Add performance warnings
+    if stats['fps'] < 30:
+        info_lines.append(f"WARNING: Low FPS! Consider reducing zoom or visible area")
+    if stats['render_time'] > 16.67:  # More than 60 FPS worth of render time
+        info_lines.append(f"WARNING: High render time! Rendering is taking too long")
+    if stats['memory_usage'] > 500:  # More than 500MB
+        info_lines.append(f"WARNING: High memory usage! Consider optimizing tile loading")
+    
+    for line in info_lines:
+        text = small_font.render(line, True, (200, 200, 200))
+        screen.blit(text, (10, y_offset))
+        y_offset += 20
+    
+    # Controls info
+    controls_text = font.render("Controls: Arrow keys to navigate, +/- to zoom, ESC to exit", True, (255, 255, 255))
+    screen.blit(controls_text, (10, HEIGHT - 30))
     
     # Update display
     pygame.display.flip()
+    
+    # Update performance metrics
+    frame_time = time.time() - frame_start
+    perf_monitor.add_frame_time(frame_time)
 
 # Cleanup
 pygame.quit()
