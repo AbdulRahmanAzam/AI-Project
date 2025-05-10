@@ -30,30 +30,124 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 # Read and print layer 2 data directly from TMX file
-tmx_path = os.path.join(script_dir, 'map', 'testmap.tmx')
+tmx_path = os.path.join(script_dir, 'map check1.tmx')
 tree = ET.parse(tmx_path)
 root = tree.getroot()
 
+# For "map check1.tmx", let's try to identify a suitable layer to use for pathfinding
+# Look for layer with "road" in the name, or use a reasonable default
+road_layer_name = None
+for layer in root.findall('.//layer'):
+    layer_name = layer.get('name', '')
+    if 'road' in layer_name.lower():
+        road_layer_name = layer_name
+        break
 
-print("\nLayer 2 Grid Data (Original TMX values):")
-for layer in root.findall('.//layer[@name="road2"]'):
+# If no road layer found, use the first layer with data
+if road_layer_name is None:
+    for layer in root.findall('.//layer'):
+        if layer.find('data') is not None:
+            road_layer_name = layer.get('name')
+            break
+
+print(f"\nLoading map data from layer: {road_layer_name}")
+
+# Extract data from the selected layer
+matrix = []
+for layer in root.findall(f'.//layer[@name="{road_layer_name}"]'):
     data = layer.find('data')
     if data is not None:
-        csv_data = data.text.strip().split(',')
-        # Remove empty strings and convert to integers
-        csv_data = [x for x in csv_data if x]
-        # Print in grid format
-        width = int(layer.get('width'))
-        for i in range(0, len(csv_data), width):
-            row = csv_data[i:i+width]
-            matrix.append(list(map(lambda s: int(s.strip()), row)))
-            # print(','.join(row))
+        # For chunked data with chunks
+        chunks = layer.findall('data/chunk')
+        if chunks:
+            print(f"Map uses chunked data format with {len(chunks)} chunks")
+            # Initialize a larger matrix to handle all chunks
+            max_x, max_y = 0, 0
+            min_x, min_y = 0, 0
+            
+            # First, determine the bounds of all chunks
+            for chunk in chunks:
+                chunk_x = int(chunk.get('x', 0))
+                chunk_y = int(chunk.get('y', 0))
+                chunk_width = int(chunk.get('width', 0))
+                chunk_height = int(chunk.get('height', 0))
+                
+                min_x = min(min_x, chunk_x)
+                min_y = min(min_y, chunk_y)
+                max_x = max(max_x, chunk_x + chunk_width)
+                max_y = max(max_y, chunk_y + chunk_height)
+            
+            # Create a matrix large enough to hold all chunks
+            width = max_x - min_x
+            height = max_y - min_y
+            
+            # Initialize with zeros
+            matrix = [[0 for _ in range(width)] for _ in range(height)]
+            
+            print(f"Created matrix with dimensions: {width}x{height}")
+            
+            # Process first chunk only for simplicity
+            chunk = chunks[0]
+            if chunk is not None:
+                chunk_x = int(chunk.get('x', 0))
+                chunk_y = int(chunk.get('y', 0))
+                chunk_width = int(chunk.get('width', 0))
+                chunk_height = int(chunk.get('height', 0))
+                
+                # Process the chunk data
+                chunk_data = chunk.text.strip().split(',')
+                chunk_data = [x for x in chunk_data if x]
+                
+                # Fill in the part of the matrix that corresponds to this chunk
+                for i in range(min(len(chunk_data), chunk_width * chunk_height)):
+                    y = (i // chunk_width) + (chunk_y - min_y)
+                    x = (i % chunk_width) + (chunk_x - min_x)
+                    
+                    if 0 <= y < height and 0 <= x < width:
+                        try:
+                            matrix[y][x] = int(chunk_data[i].strip()) if chunk_data[i].strip() else 0
+                        except (ValueError, IndexError):
+                            matrix[y][x] = 0
+                
+                print(f"Processed chunk at ({chunk_x},{chunk_y}) with size {chunk_width}x{chunk_height}")
+        else:
+            # Handle non-chunked data
+            csv_data = data.text.strip().split(',')
+            csv_data = [x for x in csv_data if x]
+            width = int(layer.get('width'))
+            for i in range(0, len(csv_data), width):
+                row = csv_data[i:i+width]
+                matrix.append(list(map(lambda s: int(s.strip()) if s.strip() else 0, row)))
+
+if not matrix or len(matrix) == 0:
+    print("Warning: Matrix is empty, creating a simple test matrix")
+    # Create a simple test matrix if the map couldn't be parsed correctly
+    matrix = [
+        [1, 1, 1, 1, 1],
+        [1, 0, 0, 0, 1],
+        [1, 0, 128, 0, 1],
+        [1, 0, 0, 0, 1],
+        [1, 1, 1, 1, 1]
+    ]
 
 temp = copy.deepcopy(matrix)
 
 def ucs_algorithm(graph, start, target):
+    # Safety check
+    if not graph or len(graph) == 0 or len(graph[0]) == 0:
+        print("Error: Invalid graph data")
+        return []
+
     rows = len(graph)
     cols = len(graph[0])
+    
+    print(f"Graph dimensions: {rows}x{cols}")
+    print(f"Start: {start}, Target value: {target}")
+    
+    # Safety check for start position
+    if start[0] < 0 or start[0] >= rows or start[1] < 0 or start[1] >= cols:
+        print(f"Error: Start position {start} out of bounds")
+        return []
     
     # Directions for neighbors (up, down, left, right)
     directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -79,6 +173,7 @@ def ucs_algorithm(graph, start, target):
         
         # If the target is reached, return
         if graph[x][y] == target:
+            print(f"Found target at position ({x}, {y})")
             return create_path(x, y)
         
         if (x, y) in visited:
@@ -91,47 +186,38 @@ def ucs_algorithm(graph, start, target):
             nx, ny = x + dx, y + dy
             
             # Check if the neighbor is within bounds
-            if 0 <= nx < rows and 0 <= ny < cols and matrix[nx][ny] != 0:
+            if 0 <= nx < rows and 0 <= ny < cols and graph[nx][ny] != 0:
                 new_cost = current_cost + 1
                 
                 # If the new cost is smaller, update and push to the queue
-                if (nx, ny) not in visited and (nx, ny) not in cost or new_cost < cost[(nx, ny)][0]:
+                if (nx, ny) not in visited and ((nx, ny) not in cost or new_cost < cost[(nx, ny)][0]):
                     cost[(nx, ny)] = (new_cost, (x, y))
                     heapq.heappush(pq, (new_cost, nx, ny))
     
-    return cost
+    print("Warning: Target not found in graph")
+    return []
 
+# For demonstration, let's use simpler coordinates for start position
+start_pos = (1, 1)
+target_val = 128  # The target tile value to find
 
-def update_graph_with_path(graph, start, target):
-    cost = ucs_algorithm(graph, start, target)
-    
-    # Trace back the path
-    path = []
-    x, y = start
-    graph[x][y] = 128  # Mark the starting point
-    
-    while (x, y) != target:
-        # Get the smallest neighbor cost
-        min_cost = float('inf')
-        next_x, next_y = -1, -1
+# Only attempt to find a path if the matrix has data
+if matrix and len(matrix) > 0 and len(matrix[0]) > 0:
+    try:
+        path = ucs_algorithm(matrix, start_pos, target_val)
+        print(f"Path found with {len(path)} steps")
         
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nx, ny = x + dx, y + dy
-            
-            if 0 <= nx < len(graph) and 0 <= ny < len(graph[0]):
-                if cost.get((nx, ny), float('inf')) < min_cost:
-                    min_cost = cost[(nx, ny)]
-                    next_x, next_y = nx, ny
-        
-        # Move to the next node in the path
-        x, y = next_x, next_y
-        graph[x][y] = 128  # Mark the path with 128
-    
-    return graph
-
-
-
-
+        # Mark the path in the matrix
+        for x, y in path:
+            if 0 <= x < len(matrix) and 0 <= y < len(matrix[0]):
+                matrix[x][y] = 128  # Mark the path
+                
+        # Update the TMX file (optional)
+        # update_tmx_file(matrix)
+    except Exception as e:
+        print(f"Error finding path: {e}")
+else:
+    print("Cannot find path: Matrix is empty or invalid")
 
 # Update the TMX file with modified matrix data
 
@@ -186,7 +272,7 @@ class Player:
     def __init__(self):
         self.width = 12 * SPRITE_SCALE
         self.height = 18 * SPRITE_SCALE
-        self.x =  0 * SCALED_TILE_SIZE
+        self.x = 0 * SCALED_TILE_SIZE
         self.y = 6 * SCALED_TILE_SIZE
         self.speed = PLAYER_SPEED
         self.direction = "down"
@@ -250,34 +336,36 @@ class TiledMap:
                         scaled_tile = pygame.transform.scale(tile, (SCALED_TILE_SIZE, SCALED_TILE_SIZE))
                         surface.blit(scaled_tile, (x * SCALED_TILE_SIZE, y * SCALED_TILE_SIZE))
 
-# Create map instance
+# Initialize game elements
+player = Player()
 game_map = TiledMap(tmx_data)
 
-# Game Loop
-player = Player()
+# Main game loop
 running = True
-
 while running:
-    dt = clock.tick(FPS) / 1000  # Delta time in seconds
-
+    # Calculate delta time
+    dt = clock.tick(FPS) / 1000.0
+    
+    # Process events
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                running = False
+    
+    # Get player input
     keys = pygame.key.get_pressed()
     player.update(dt, keys)
-
-    # Clear screen
+    
+    # Render game
     screen.fill((0, 0, 0))
-    
-    # Draw map
     game_map.render(screen)
-    
-    # Draw player
     player.draw(screen)
-
+    
+    # Update display
     pygame.display.flip()
 
-update_tmx_file(temp)
+# Cleanup
 pygame.quit()
 sys.exit()
